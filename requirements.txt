@@ -1,4 +1,7 @@
 pandas
 numpy
+pyodbc
+python-dotenv
+scikit-learn
 
 # -e .
