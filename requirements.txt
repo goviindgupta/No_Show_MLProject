@@ -3,5 +3,8 @@ numpy
 pyodbc
 python-dotenv
 scikit-learn
-
+imbalanced-learn
+seaborn
+matplotlib
+scipy
 # -e .
