@@ -1,111 +1,87 @@
 import os
 import sys
-from dataclasses import dataclass
-from sklearn.ensemble import (
-    AdaBoostClassifier,
-    GradientBoostingClassifier,
-    RandomForestClassifier
-)
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.model_selection import GridSearchCV
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from keras import layers, models
+from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, accuracy_score
 from src.NO_SHOW_MLPROJECT.exception import CustomException
 from src.NO_SHOW_MLPROJECT.logger import logging
-from src.NO_SHOW_MLPROJECT.utils import save_object
+from src.NO_SHOW_MLPROJECT.utils import save_object, load_object
+from imblearn.over_sampling import SMOTE
 
-@dataclass
 class ModelTrainerConfig:
-    trained_model_file_path: str = os.path.join("artifacts", "model.pkl")
+    trained_model_file_path: str = os.path.join("artifacts", "model.keras")
+    preprocessor_file_path: str = os.path.join("artifacts", "preprocessor.pkl")
 
 class ModelTrainer:
     def __init__(self):
         self.model_trainer_config = ModelTrainerConfig()
+        self.preprocessor = load_object(self.model_trainer_config.preprocessor_file_path)
 
-    def evaluate_model(self, model, X_train, y_train, X_test, y_test):
-        model.fit(X_train, y_train)
-        y_train_pred = model.predict(X_train)
-        y_test_pred = model.predict(X_test)
+    def build_model(self, input_shape):
+        model = models.Sequential([
+            layers.Dense(64, activation='relu', input_shape=(input_shape,)),
+            layers.Dense(32, activation='relu'),
+            layers.Dense(1, activation='sigmoid')
+        ])
+        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        return model
 
-        train_metrics = {
-            "accuracy": accuracy_score(y_train, y_train_pred),
-            "precision": precision_score(y_train, y_train_pred, average='weighted'),
-            "recall": recall_score(y_train, y_train_pred, average='weighted'),
-            "f1_score": f1_score(y_train, y_train_pred, average='weighted')
-        }
-
-        test_metrics = {
-            "accuracy": accuracy_score(y_test, y_test_pred),
-            "precision": precision_score(y_test, y_test_pred, average='weighted'),
-            "recall": recall_score(y_test, y_test_pred, average='weighted'),
-            "f1_score": f1_score(y_test, y_test_pred, average='weighted')
-        }
-
-        return train_metrics, test_metrics
-
-    def initiate_model_trainer(self, train_array, test_array):
+    def initiate_model_trainer(self, X_train, X_test, y_train, y_test):
         try:
-            logging.info("Split training and test input data")
-            X_train, y_train, X_test, y_test = (
-                train_array[:, :-1],
-                train_array[:, -1],
-                test_array[:, :-1],
-                test_array[:, -1]
-            )
+            logging.info("Starting TensorFlow model training")
 
-            models = {
-                "Random Forest": RandomForestClassifier(),
-                "Decision Tree": DecisionTreeClassifier(),
-                "Gradient Boosting": GradientBoostingClassifier(),
-                "AdaBoost": AdaBoostClassifier(),
+            # Initialize SMOTE
+            smote = SMOTE(random_state=42)
+            X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+
+            # Convert to TensorFlow-compatible format
+            X_train_smote = np.array(X_train_smote, dtype=np.float32)
+            y_train_smote = np.array(y_train_smote, dtype=np.float32)
+            X_test = np.array(X_test, dtype=np.float32)
+            y_test = np.array(y_test, dtype=np.float32)
+
+            # Build and train the model
+            model = self.build_model(X_train_smote.shape[1])
+
+            # Use class weights to handle imbalance
+            class_weights = {0: 1., 1: 10.}  # Adjust weights based on your needs
+            history = model.fit(X_train_smote, y_train_smote, epochs=10, batch_size=32, validation_split=0.2, class_weight=class_weights)
+
+            # Evaluate the model
+            loss, accuracy = model.evaluate(X_test, y_test)
+            logging.info(f"Test Accuracy: {accuracy:.2f}")
+
+            y_pred = (model.predict(X_test) > 0.5).astype("int32")
+
+            precision = precision_score(y_test, y_pred)
+            recall = recall_score(y_test, y_pred)
+            f1 = f1_score(y_test, y_pred)
+
+            logging.info(f"Precision: {precision:.2f}")
+            logging.info(f"Recall: {recall:.2f}")
+            logging.info(f"F1 Score: {f1:.2f}")
+            logging.info(f"Accuracy: {accuracy_score(y_test, y_pred):.2f}")
+
+            LABELS = ["Show", "No Show"]
+            logging.info("Classification Report:\n" + classification_report(y_test, y_pred, target_names=LABELS))
+
+            # Ensure the artifacts directory exists
+            if not os.path.exists(os.path.dirname(self.model_trainer_config.trained_model_file_path)):
+                os.makedirs(os.path.dirname(self.model_trainer_config.trained_model_file_path))
+
+            # Save the model
+            model.save(self.model_trainer_config.trained_model_file_path)
+            logging.info(f"TensorFlow model saved to {self.model_trainer_config.trained_model_file_path}")
+
+            return {
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1
             }
-
-            # Hyperparameters for tuning
-            params = {
-                "Random Forest": {
-                    'n_estimators': [100, 200],
-                    'max_depth': [None, 10, 20]
-                },
-                "Decision Tree": {
-                    'criterion': ['gini', 'entropy'],
-                    'max_depth': [None, 10, 20]
-                },
-                "Gradient Boosting": {
-                    'n_estimators': [100, 200],
-                    'learning_rate': [0.1, 0.05],
-                    'max_depth': [3, 5]
-                },
-                "AdaBoost": {
-                    'n_estimators': [50, 100],
-                    'learning_rate': [0.1, 1]
-                }
-            }
-
-            best_model = None
-            best_score = 0
-
-            for model_name, model in models.items():
-                logging.info(f"Training {model_name}")
-                
-                gs = GridSearchCV(model, params[model_name], cv=3, n_jobs=-1, scoring='f1_weighted')
-                gs.fit(X_train, y_train)
-
-                train_metrics, test_metrics = self.evaluate_model(gs.best_estimator_, X_train, y_train, X_test, y_test)
-
-                logging.info(f"{model_name} Train Metrics: {train_metrics}")
-                logging.info(f"{model_name} Test Metrics: {test_metrics}")
-
-                if test_metrics['f1_score'] > best_score:
-                    best_score = test_metrics['f1_score']
-                    best_model = gs.best_estimator_
-
-            logging.info(f"Best model: {best_model}")
-
-            save_object(
-                file_path=self.model_trainer_config.trained_model_file_path,
-                obj=best_model
-            )
-
-            return best_model, best_score
 
         except Exception as e:
+            logging.error(f"Error in TensorFlow model training: {e}")
             raise CustomException(e, sys)

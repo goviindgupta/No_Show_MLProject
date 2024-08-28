@@ -7,4 +7,6 @@ imbalanced-learn
 seaborn
 matplotlib
 scipy
+dill 
+Flask
 # -e .

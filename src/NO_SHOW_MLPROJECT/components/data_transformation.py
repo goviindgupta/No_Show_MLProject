@@ -1,134 +1,155 @@
-import sys
-from dataclasses import dataclass
-import os
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from src.NO_SHOW_MLPROJECT.utils import save_object
 from src.NO_SHOW_MLPROJECT.exception import CustomException
 from src.NO_SHOW_MLPROJECT.logger import logging
-
-@dataclass
-class DataTransformationConfig:
-    preprocessor_obj_file_path: str = os.path.join('artifacts', 'preprocessor.pkl')
+import sys
+from src.NO_SHOW_MLPROJECT.utils import save_object
+import os
+from sklearn.preprocessing import LabelEncoder
 
 class DataTransformation:
     def __init__(self):
-        self.data_transformation_config = DataTransformationConfig()
+        self.pipeline = None
 
-    def get_data_transformer_object(self) -> ColumnTransformer:
+    def transform_data(self, data: pd.DataFrame) -> pd.DataFrame:
         try:
-            # Define numerical and categorical columns
-            numerical_columns = ["Age"]
-            categorical_columns = [
-                "Gender", "Alcohol_Consumption", "Hypertension", "Diabetes", 
-                "Clinic_Location", "Specialty", "Neighborhood"
-            ]
+            # Check for and handle missing values (if any)
+            data = data.dropna()
 
-            # Create pipelines for numerical and categorical features
-            numerical_pipeline = Pipeline(steps=[
-                ('imputer', SimpleImputer(strategy='median')),  # Handle missing values
-                ('scaler', StandardScaler())  # Standardize numerical features
-            ])
+            # Create age group categories
+            data['age_group'] = pd.cut(data['Age'], bins=[0, 30, 40, 50, 60, 100], labels=['<30', '30-40', '40-50', '50-60', '>60'])
+            # Convert to string to avoid issues with categorical data
+            # data['age_group'] = data['age_group'].astype(str)
 
-            categorical_pipeline = Pipeline(steps=[
-                ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),  # Handle missing values
-                ('onehot', OneHotEncoder(handle_unknown='ignore'))  # One-hot encode categorical features
-            ])
+            # Drop the original Age column
+            data.drop('Age', axis='columns', inplace=True)
 
-            logging.info(f"Categorical Columns: {categorical_columns}")
-            logging.info(f"Numerical Columns: {numerical_columns}")
+            # Apply One-Hot Encoding for nominal variables including 'age_group'
+            # data = pd.get_dummies(data, columns=['Clinic_Location', 'Specialty', 'Neighborhood', 'age_group'], drop_first=True)
 
-            # Combine pipelines into a single ColumnTransformer
-            preprocessor = ColumnTransformer(
-                transformers=[
-                    ('num', numerical_pipeline, numerical_columns),
-                    ('cat', categorical_pipeline, categorical_columns)
-                ]
-            )
+            # Map 'Alcohol Consumption' to numeric values
+            mapping_dict = {'0/week': 0, '1/week': 1, '5/week': 2, '10/week': 3, '> 14/week': 4}
+            data['Alcohol_Consumption'] = data['Alcohol_Consumption'].map(mapping_dict)
 
-            return preprocessor
+            # Convert 'Hypertension' and 'Diabetes' to integer
+            data['Hypertension'] = data['Hypertension'].astype(int)
+            data['Diabetes'] = data['Diabetes'].astype(int)
+
+            # Convert date columns to datetime format and extract features
+            data['Appointment_Date'] = pd.to_datetime(data['Appointment_Date'])
+            data['Schedule_Date'] = pd.to_datetime(data['Schedule_Date'])
+            data['days_until_appointment'] = (data['Appointment_Date'] - data['Schedule_Date']).dt.days
+
+            # Drop the original date columns
+            data.drop(columns=['Appointment_Date', 'Schedule_Date'], inplace=True)
+
+            # Convert 'Gender' to label encoding
+            le = LabelEncoder()
+            data['Gender'] = le.fit_transform(data['Gender'])
+
+            # Convert boolean columns to integers
+            bool_columns = data.select_dtypes(include=['bool']).columns
+            for column in bool_columns:
+                data[column] = data[column].astype(int)
+
+            # # Apply One-Hot Encoding for nominal variables
+            # data = pd.get_dummies(data, columns=['Clinic_Location', 'Specialty', 'Neighborhood', 'age_group'], drop_first=True)
+                
+             # Print the column types for debugging
+            print("Column types before checking if all data is numeric:")
+            print(data.dtypes)
+            print('............................................')
+
+            # Ensure all data is numeric
+            # assert data.apply(lambda x: np.issubdtype(x.dtype, np.number)).all(), "Non-numeric data found in dataset"
+
+
+            return data
 
         except Exception as e:
-            raise CustomException(e, sys)  # Handle exceptions
+            logging.error(f"Error in data transformation: {e}")
+            raise CustomException(e, sys)
+
+    def save_preprocessor(self):
+        """ Save the preprocessor pipeline to a file """
+        if self.pipeline is not None:
+            save_object(file_path=os.path.join("artifacts", "preprocessor.pkl"), obj=self.pipeline)
+        else:
+            raise CustomException("Pipeline is not initialized, cannot save preprocessor.", sys)
 
     def initiate_data_transformation(self, train_path: str, test_path: str):
         try:
-            # Load datasets
+            logging.info("Loading train and test data")
             train_df = pd.read_csv(train_path)
             test_df = pd.read_csv(test_path)
 
-            logging.info("Reading the train and test files")
+            # Check if 'target_no_show' column exists
+            if 'target_no_show' not in train_df.columns:
+                raise CustomException("Column 'target_no_show' is missing in train data", sys)
+            if 'target_no_show' not in test_df.columns:
+                raise CustomException("Column 'target_no_show' is missing in test data", sys)
 
-            preprocessor_obj = self.get_data_transformer_object()
+            logging.info("Performing data transformations")
 
-            target_column_name = "target_no_show"
+            # Separate target variable
+            y_train = train_df['target_no_show']
+            y_test = test_df['target_no_show']
+            
+            # Drop target variable from feature data
+            train_features = train_df.drop(columns=['target_no_show'])
+            test_features = test_df.drop(columns=['target_no_show'])
 
-            # Split datasets into features and target
-            input_features_train_df = train_df.drop(columns=[target_column_name])
-            target_features_train_df = train_df[target_column_name]
+            # Apply transformations
+            train_features_transformed = self.transform_data(train_features)
+            test_features_transformed = self.transform_data(test_features)
 
-            input_features_test_df = test_df.drop(columns=[target_column_name])
-            target_features_test_df = test_df[target_column_name]
 
-            logging.info('Applying preprocessing on training and test dataframes')
+            print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+            print('datatype of train feature transform',train_features_transformed.dtypes)
+            print('datatype of test feature transform',test_features_transformed.dtypes)
+            print('777777777&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&')
 
-            # Apply preprocessing
-            input_feature_train_arr = preprocessor_obj.fit_transform(input_features_train_df).toarray()
-            input_feature_test_arr = preprocessor_obj.transform(input_features_test_df).toarray()
+            # Initialize the pipeline with correct column names
+            numeric_features = ['days_until_appointment', 'Alcohol_Consumption','Hypertension','Diabetes','Gender']
+            # Since 'Clinic_Location', 'Specialty', 'Neighborhood', 'age_group' were one-hot encoded, they will have multiple columns
+            categorical_features = [col for col in train_features_transformed.columns if col not in numeric_features]
 
-            # Ensure target arrays are 2D
-            target_features_train_arr = target_features_train_df.values.reshape(-1, 1)
-            target_features_test_arr = target_features_test_df.values.reshape(-1, 1)
 
-            # Print shapes and types for debugging
-            logging.info(f"Shape of input_feature_train_arr: {input_feature_train_arr.shape}")
-            logging.info(f"Shape of target_features_train_arr: {target_features_train_arr.shape}")
-            logging.info(f"Shape of input_feature_test_arr: {input_feature_test_arr.shape}")
-            logging.info(f"Shape of target_features_test_arr: {target_features_test_arr.shape}")
+             # Print the identified numeric and categorical features for debugging
+            print("Numeric features:", numeric_features)
+            print("Categorical features:", categorical_features)
 
-            logging.info(f"Type of input_feature_train_arr: {type(input_feature_train_arr)}")
-            logging.info(f"Type of target_features_train_arr: {type(target_features_train_arr)}")
-            logging.info(f"Type of input_feature_test_arr: {type(input_feature_test_arr)}")
-            logging.info(f"Type of target_features_test_arr: {type(target_features_test_arr)}")
+            print('&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&')
 
-            # Concatenate features and target arrays
-            train_arr = np.concatenate([input_feature_train_arr, target_features_train_arr], axis=1)
-            test_arr = np.concatenate([input_feature_test_arr, target_features_test_arr], axis=1)
+            # self.pipeline = Pipeline([
+            #     ('preprocessor', ColumnTransformer(
+            #         transformers=[
+            #             ('num', StandardScaler(), numeric_features),
+            #             ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+            #         ]
+            #     ))
+            # ])
 
-            logging.info("Saving preprocessing object")
+            self.pipeline = Pipeline([
+    ('preprocessor', ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numeric_features),
+            ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)  # Set sparse_output=False
+        ]
+    ))
+])
+            # Apply pipeline transformations
+            X_train = self.pipeline.fit_transform(train_features_transformed)
+            X_test = self.pipeline.transform(test_features_transformed)
 
-            save_object(
-                file_path=self.data_transformation_config.preprocessor_obj_file_path,
-                obj=preprocessor_obj
-            )
+            # Save the preprocessor pipeline
+            self.save_preprocessor()
 
-            return (
-                train_arr,
-                test_arr,
-                self.data_transformation_config.preprocessor_obj_file_path
-            )
+            return X_train, X_test, y_train.values, y_test.values
 
         except Exception as e:
+            logging.error(f"Error in initiating data transformation: {e}")
             raise CustomException(e, sys)
-
-
-
-
-if __name__ == "__main__":
-    try:
-        train_data_path = 'path_to_train.csv'
-        test_data_path = 'path_to_test.csv'
-        data_transformation = DataTransformation()
-        train_arr, test_arr, preprocessor_path = data_transformation.initiate_data_transformation(train_data_path, test_data_path)
-
-        print(f"Training data shape: {train_arr.shape}")
-        print(f"Test data shape: {test_arr.shape}")
-        print(f"Preprocessor object saved at: {preprocessor_path}")
-
-    except Exception as e:
-        logging.exception(f"Error occurred: {e}")
-        raise CustomException(e, sys)

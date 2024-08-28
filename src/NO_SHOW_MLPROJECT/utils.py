@@ -1,4 +1,3 @@
-
 import os
 import sys
 import pandas as pd
@@ -6,9 +5,7 @@ import pyodbc
 from dotenv import load_dotenv
 from src.NO_SHOW_MLPROJECT.exception import CustomException
 from src.NO_SHOW_MLPROJECT.logger import logging
-
-import pickle
-import numpy as np 
+import dill
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -22,12 +19,6 @@ database = os.getenv("db")
 def read_sql_data():
     logging.info("Reading data from SQL Server started.")
     try:
-        # Set up the connection using SQL Server Authentication
-        # server = 'localhost,1433'  # Note the correction: comma instead of a space
-        # database = 'college'
-        # username = 'SA'
-        # password = 'govind@123'
-        
         # Adjusted connection string for SQL Server Authentication
         cnxn = pyodbc.connect(
             f'DRIVER={{ODBC Driver 17 for SQL Server}};'
@@ -40,31 +31,38 @@ def read_sql_data():
         cursor = cnxn.cursor()
 
         if cursor:
-            print('Good connection')
-        logging.info('Connection established successfully.')
+            logging.info('Good connection established.')
+        else:
+            logging.error('Connection failed.')
 
         # Example query - Replace with your own SQL query
         query = "SELECT * FROM NoShow_Updated"
         df = pd.read_sql(query, cnxn)
-        print(df.head())
+        logging.info(f"Data read successfully. Sample data:\n{df.head()}")
 
         return df
 
     except Exception as ex:
         raise CustomException(ex, sys)
     
-def save_object(file_path,obj):
+def save_object(file_path, obj):
     try:
         dir_path = os.path.dirname(file_path)
-
-        os.makedirs(dir_path,exist_ok=True)
-        with open(file_path,"wb") as file_obj:
-            pickle.dump(obj,file_obj)
+        os.makedirs(dir_path, exist_ok=True)
+        with open(file_path, "wb") as file_obj:
+            dill.dump(obj, file_obj)
+        logging.info(f"Object saved successfully at {file_path}")
 
     except Exception as e:
-        raise CustomException(e,sys)
+        raise CustomException(e, sys)
+    
+def load_object(file_path: str):
+    try:
+        with open(file_path, "rb") as file_obj:
+            return dill.load(file_obj)
+    except Exception as e:
+        raise CustomException(e, sys)
 
 # Example function call (You can run this to test the connection)
 if __name__ == "__main__":
     read_sql_data()
-
